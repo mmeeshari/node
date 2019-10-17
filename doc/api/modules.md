@@ -202,7 +202,7 @@ NODE_MODULES_PATHS(START)
 5. return DIRS
 ```
 
-If `--experimental-exports` is enabled, Node.js allows packages loaded via
+Node.js allows packages loaded via
 `LOAD_NODE_MODULES` to explicitly declare which file paths to expose and how
 they should be interpreted. This expands on the control packages already had
 using the `main` field.
@@ -492,14 +492,14 @@ wrapper that looks like the following:
 
 By doing this, Node.js achieves a few things:
 
-- It keeps top-level variables (defined with `var`, `const` or `let`) scoped to
+* It keeps top-level variables (defined with `var`, `const` or `let`) scoped to
 the module rather than the global object.
-- It helps to provide some global-looking variables that are actually specific
-to the module, such as:
-  - The `module` and `exports` objects that the implementor can use to export
-  values from the module.
-  - The convenience variables `__filename` and `__dirname`, containing the
-  module's absolute filename and directory path.
+* It helps to provide some global-looking variables that are actually specific
+  to the module, such as:
+  * The `module` and `exports` objects that the implementor can use to export
+    values from the module.
+  * The convenience variables `__filename` and `__dirname`, containing the
+    module's absolute filename and directory path.
 
 ## The module scope
 
@@ -695,7 +695,7 @@ Module {
      '/node_modules' ] }
 ```
 
-#### require.resolve(request[, options])
+#### require.resolve(request\[, options\])
 <!-- YAML
 added: v0.3.0
 changes:
@@ -970,11 +970,11 @@ added: v10.12.0
 deprecated: v12.2.0
 -->
 
+> Stability: 0 - Deprecated: Please use [`createRequire()`][] instead.
+
 * `filename` {string} Filename to be used to construct the relative require
   function.
 * Returns: {require} Require function
-
-> Stability: 0 - Deprecated: Please use [`createRequire()`][] instead.
 
 ```js
 const { createRequireFromPath } = require('module');
@@ -982,6 +982,36 @@ const requireUtil = createRequireFromPath('../src/utils/');
 
 // Require `../src/utils/some-tool`
 requireUtil('./some-tool');
+```
+
+### module.syncBuiltinESMExports()
+<!-- YAML
+added: v12.12.0
+-->
+
+The `module.syncBuiltinESMExports()` method updates all the live bindings for
+builtin ES Modules to match the properties of the CommonJS exports. It does
+not add or remove exported names from the ES Modules.
+
+```js
+const fs = require('fs');
+const { syncBuiltinESMExports } = require('module');
+
+fs.readFile = null;
+
+delete fs.readFileSync;
+
+fs.newAPI = function newAPI() {
+  // ...
+};
+
+syncBuiltinESMExports();
+
+import('fs').then((esmFS) => {
+  assert.strictEqual(esmFS.readFile, null);
+  assert.strictEqual('readFileSync' in fs, true);
+  assert.strictEqual(esmFS.newAPI, undefined);
+});
 ```
 
 [GLOBAL_FOLDERS]: #modules_loading_from_the_global_folders

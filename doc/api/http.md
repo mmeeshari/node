@@ -71,7 +71,7 @@ the requests to that server, but each one will occur over a new connection.
 When a connection is closed by the client or the server, it is removed
 from the pool. Any unused sockets in the pool will be unrefed so as not
 to keep the Node.js process running when there are no outstanding requests.
-(see [`socket.unref()`]).
+(see [`socket.unref()`][]).
 
 It is good practice, to [`destroy()`][] an `Agent` instance when it is no
 longer in use, because unused sockets consume OS resources.
@@ -107,7 +107,7 @@ http.get({
 });
 ```
 
-### new Agent([options])
+### new Agent(\[options\])
 <!-- YAML
 added: v0.3.4
 -->
@@ -149,7 +149,7 @@ options.agent = keepAliveAgent;
 http.request(options, onResponseCallback);
 ```
 
-### agent.createConnection(options[, callback])
+### agent.createConnection(options\[, callback\])
 <!-- YAML
 added: v0.11.4
 -->
@@ -353,7 +353,7 @@ A client and server pair demonstrating how to listen for the `'connect'` event:
 ```js
 const http = require('http');
 const net = require('net');
-const url = require('url');
+const { URL } = require('url');
 
 // Create an HTTP tunneling proxy
 const proxy = http.createServer((req, res) => {
@@ -362,8 +362,8 @@ const proxy = http.createServer((req, res) => {
 });
 proxy.on('connect', (req, cltSocket, head) => {
   // Connect to an origin server
-  const srvUrl = url.parse(`http://${req.url}`);
-  const srvSocket = net.connect(srvUrl.port, srvUrl.hostname, () => {
+  const { port, hostname } = new URL(`http://${req.url}`);
+  const srvSocket = net.connect(port || 80, hostname, () => {
     cltSocket.write('HTTP/1.1 200 Connection Established\r\n' +
                     'Proxy-agent: Node.js-Proxy\r\n' +
                     '\r\n');
@@ -576,7 +576,7 @@ deprecated: REPLACEME
 
 See [`request.socket`][].
 
-### request.end([data[, encoding]][, callback])
+### request.end(\[data\[, encoding\]\]\[, callback\])
 <!-- YAML
 added: v0.1.90
 changes:
@@ -676,6 +676,62 @@ Removes a header that's already defined into headers object.
 request.removeHeader('Content-Type');
 ```
 
+### request.reusedSocket
+
+<!-- YAML
+added: REPLACEME
+-->
+
+* {boolean} Whether the request is send through a reused socket.
+
+When sending request through a keep-alive enabled agent, the underlying socket
+might be reused. But if server closes connection at unfortunate time, client
+may run into a 'ECONNRESET' error.
+
+```js
+const http = require('http');
+
+// Server has a 5 seconds keep-alive timeout by default
+http
+  .createServer((req, res) => {
+    res.write('hello\n');
+    res.end();
+  })
+  .listen(3000);
+
+setInterval(() => {
+  // Adapting a keep-alive agent
+  http.get('http://localhost:3000', { agent }, (res) => {
+    res.on('data', (data) => {
+      // Do nothing
+    });
+  });
+}, 5000); // Sending request on 5s interval so it's easy to hit idle timeout
+```
+
+By marking a request whether it reused socket or not, we can do
+automatic error retry base on it.
+
+```js
+const http = require('http');
+const agent = new http.Agent({ keepAlive: true });
+
+function retriableRequest() {
+  const req = http
+    .get('http://localhost:3000', { agent }, (res) => {
+      // ...
+    })
+    .on('error', (err) => {
+      // Check if retry is needed
+      if (req.reusedSocket && err.code === 'ECONNRESET') {
+        retriableRequest();
+      }
+    });
+}
+
+retriableRequest();
+```
+
 ### request.setHeader(name, value)
 <!-- YAML
 added: v1.6.0
@@ -701,7 +757,7 @@ or
 request.setHeader('Cookie', ['type=ninja', 'language=javascript']);
 ```
 
-### request.setNoDelay([noDelay])
+### request.setNoDelay(\[noDelay\])
 <!-- YAML
 added: v0.5.9
 -->
@@ -711,7 +767,7 @@ added: v0.5.9
 Once a socket is assigned to this request and is connected
 [`socket.setNoDelay()`][] will be called.
 
-### request.setSocketKeepAlive([enable][, initialDelay])
+### request.setSocketKeepAlive(\[enable\]\[, initialDelay\])
 <!-- YAML
 added: v0.5.9
 -->
@@ -722,7 +778,7 @@ added: v0.5.9
 Once a socket is assigned to this request and is connected
 [`socket.setKeepAlive()`][] will be called.
 
-### request.setTimeout(timeout[, callback])
+### request.setTimeout(timeout\[, callback\])
 <!-- YAML
 added: v0.5.9
 changes:
@@ -787,7 +843,7 @@ added: v12.7.0
 Is `true` if all data has been flushed to the underlying system, immediately
 before the [`'finish'`][] event is emitted.
 
-### request.write(chunk[, encoding][, callback])
+### request.write(chunk\[, encoding\]\[, callback\])
 <!-- YAML
 added: v0.1.29
 -->
@@ -912,9 +968,9 @@ ensure the response is a properly formatted HTTP response message.
 
 `err` is an instance of `Error` with two extra columns:
 
-+ `bytesParsed`: the bytes count of request packet that Node.js may have parsed
+* `bytesParsed`: the bytes count of request packet that Node.js may have parsed
   correctly;
-+ `rawPacket`: the raw packet of current request.
+* `rawPacket`: the raw packet of current request.
 
 ### Event: 'close'
 <!-- YAML
@@ -994,7 +1050,7 @@ After this event is emitted, the request's socket will not have a `'data'`
 event listener, meaning it will need to be bound in order to handle data
 sent to the server on that socket.
 
-### server.close([callback])
+### server.close(\[callback\])
 <!-- YAML
 added: v0.1.90
 -->
@@ -1044,7 +1100,7 @@ added: v0.7.0
 
 Limits maximum incoming headers count. If set to 0, no limit will be applied.
 
-### server.setTimeout([msecs][, callback])
+### server.setTimeout(\[msecs\]\[, callback\])
 <!-- YAML
 added: v0.9.12
 changes:
@@ -1169,13 +1225,13 @@ added: v0.3.0
 deprecated: REPLACEME
 -->
 
-* {net.Socket}
-
 > Stability: 0 - Deprecated. Use [`response.socket`][].
+
+* {net.Socket}
 
 See [`response.socket`][].
 
-### response.end([data][, encoding][, callback])
+### response.end(\[data\[, encoding\]\]\[, callback\])
 <!-- YAML
 added: v0.1.90
 changes:
@@ -1383,7 +1439,7 @@ header will not yield the expected result. If progressive population of headers
 is desired with potential future retrieval and modification, use
 [`response.setHeader()`][] instead of [`response.writeHead()`][].
 
-### response.setTimeout(msecs[, callback])
+### response.setTimeout(msecs\[, callback\])
 <!-- YAML
 added: v0.9.12
 -->
@@ -1481,7 +1537,7 @@ added: v12.7.0
 Is `true` if all data has been flushed to the underlying system, immediately
 before the [`'finish'`][] event is emitted.
 
-### response.write(chunk[, encoding][, callback])
+### response.write(chunk\[, encoding\]\[, callback\])
 <!-- YAML
 added: v0.1.29
 -->
@@ -1527,7 +1583,7 @@ Sends a HTTP/1.1 100 Continue message to the client, indicating that
 the request body should be sent. See the [`'checkContinue'`][] event on
 `Server`.
 
-### response.writeHead(statusCode[, statusMessage][, headers])
+### response.writeHead(statusCode\[, statusMessage\]\[, headers\])
 <!-- YAML
 added: v0.1.30
 changes:
@@ -1672,7 +1728,7 @@ const req = http.request({
 });
 ```
 
-### message.destroy([error])
+### message.destroy(\[error\])
 <!-- YAML
 added: v0.3.0
 -->
@@ -1778,7 +1834,7 @@ added: v0.11.6
 The raw request/response trailer keys and values exactly as they were
 received. Only populated at the `'end'` event.
 
-### message.setTimeout(msecs, callback)
+### message.setTimeout(msecs\[, callback\])
 <!-- YAML
 added: v0.5.9
 -->
@@ -1921,7 +1977,7 @@ A collection of all the standard HTTP response status codes, and the
 short description of each. For example, `http.STATUS_CODES[404] === 'Not
 Found'`.
 
-## http.createServer([options][, requestListener])
+## http.createServer(\[options\]\[, requestListener\])
 <!-- YAML
 added: v0.1.13
 changes:
@@ -1929,6 +1985,7 @@ changes:
     pr-url: https://github.com/nodejs/node/pull/15752
     description: The `options` argument is supported now.
 -->
+
 * `options` {Object}
   * `IncomingMessage` {http.IncomingMessage} Specifies the `IncomingMessage`
     class to be used. Useful for extending the original `IncomingMessage`.
@@ -1945,8 +2002,8 @@ Returns a new instance of [`http.Server`][].
 The `requestListener` is a function which is automatically
 added to the [`'request'`][] event.
 
-## http.get(options[, callback])
-## http.get(url[, options][, callback])
+## http.get(options\[, callback\])
+## http.get(url\[, options\]\[, callback\])
 <!-- YAML
 added: v0.3.6
 changes:
@@ -2033,8 +2090,8 @@ added: v11.6.0
 Read-only property specifying the maximum allowed size of HTTP headers in bytes.
 Defaults to 8KB. Configurable using the [`--max-http-header-size`][] CLI option.
 
-## http.request(options[, callback])
-## http.request(url[, options][, callback])
+## http.request(options\[, callback\])
+## http.request(url\[, options\]\[, callback\])
 <!-- YAML
 added: v0.3.6
 changes:
@@ -2195,6 +2252,25 @@ In the case of a connection error, the following events will be emitted:
 * `'error'`
 * `'close'`
 
+In the case of a premature connection close before the response is received,
+the following events will be emitted in the following order:
+
+* `'socket'`
+* `'error'` with an error with message `'Error: socket hang up'` and code
+  `'ECONNRESET'`
+* `'close'`
+
+In the case of a premature connection close after the response is received,
+the following events will be emitted in the following order:
+
+* `'socket'`
+* `'response'`
+  * `'data'` any number of times, on the `res` object
+* (connection closed here)
+* `'aborted'` on the `res` object
+* `'close'`
+* `'close'` on the `res` object
+
 If `req.abort()` is called before the connection succeeds, the following events
 will be emitted in the following order:
 
@@ -2215,7 +2291,6 @@ will be emitted in the following order:
 * `'abort'`
 * `'aborted'` on the `res` object
 * `'close'`
-* `'end'` on the `res` object
 * `'close'` on the `res` object
 
 Setting the `timeout` option or using the `setTimeout()` function will

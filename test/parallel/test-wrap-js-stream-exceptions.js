@@ -10,10 +10,14 @@ process.once('uncaughtException', common.mustCall((err) => {
 }));
 
 const socket = new JSStreamWrap(new Duplex({
-  read: common.mustCall(),
+  read: common.mustNotCall(),
   write: common.mustCall((buffer, data, cb) => {
     throw new Error('exception!');
   })
 }));
 
-assert.throws(() => socket.end('foo'), /Error: write EPROTO/);
+socket.end('foo');
+socket.on('error', common.expectsError({
+  type: Error,
+  message: 'write EPROTO'
+}));

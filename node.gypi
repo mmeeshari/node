@@ -139,7 +139,6 @@
 
     [ 'node_shared_http_parser=="false"', {
       'dependencies': [
-        'deps/http_parser/http_parser.gyp:http_parser',
         'deps/llhttp/llhttp.gyp:llhttp'
       ],
     } ],
@@ -290,6 +289,11 @@
     }],
     [ 'OS=="sunos"', {
       'ldflags': [ '-Wl,-M,/usr/lib/ld/map.noexstk' ],
+    }],
+    [ 'OS=="linux"', {
+      'libraries!': [
+        '-lrt'
+      ],
     }],
     [ 'OS in "freebsd linux"', {
       'ldflags': [ '-Wl,-z,relro',

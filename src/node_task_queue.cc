@@ -10,6 +10,7 @@
 
 namespace node {
 
+using errors::TryCatchScope;
 using v8::Array;
 using v8::Context;
 using v8::Function;
@@ -42,6 +43,8 @@ static void EnqueueMicrotask(const FunctionCallbackInfo<Value>& args) {
 
 // Should be in sync with runNextTicks in internal/process/task_queues.js
 bool RunNextTicksNative(Environment* env) {
+  OnScopeLeave weakref_cleanup([&]() { env->RunWeakRefCleanup(); });
+
   TickInfo* tick_info = env->tick_info();
   if (!tick_info->has_tick_scheduled() && !tick_info->has_rejection_to_warn())
     MicrotasksScope::PerformCheckpoint(env->isolate());
@@ -55,7 +58,7 @@ bool RunNextTicksNative(Environment* env) {
 }
 
 static void RunMicrotasks(const FunctionCallbackInfo<Value>& args) {
-  args.GetIsolate()->RunMicrotasks();
+  MicrotasksScope::PerformCheckpoint(args.GetIsolate());
 }
 
 static void SetTickCallback(const FunctionCallbackInfo<Value>& args) {
@@ -111,8 +114,17 @@ void PromiseRejectCallback(PromiseRejectMessage message) {
   }
 
   Local<Value> args[] = { type, promise, value };
+
+  // V8 does not expect this callback to have a scheduled exceptions once it
+  // returns, so we print them out in a best effort to do something about it
+  // without failing silently and without crashing the process.
+  TryCatchScope try_catch(env);
   USE(callback->Call(
       env->context(), Undefined(isolate), arraysize(args), args));
+  if (try_catch.HasCaught() && !try_catch.HasTerminated()) {
+    fprintf(stderr, "Exception in PromiseRejectCallback:\n");
+    PrintCaughtException(isolate, env->context(), try_catch);
+  }
 }
 
 static void SetPromiseRejectCallback(

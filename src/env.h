@@ -382,6 +382,7 @@ constexpr size_t kFsStatsBufferLength =
   V(async_wrap_ctor_template, v8::FunctionTemplate)                            \
   V(async_wrap_object_ctor_template, v8::FunctionTemplate)                     \
   V(compiled_fn_entry_template, v8::ObjectTemplate)                            \
+  V(dir_instance_template, v8::ObjectTemplate)                                 \
   V(fd_constructor_template, v8::ObjectTemplate)                               \
   V(fdclose_constructor_template, v8::ObjectTemplate)                          \
   V(filehandlereadwrap_template, v8::ObjectTemplate)                           \
@@ -444,6 +445,7 @@ constexpr size_t kFsStatsBufferLength =
   V(primordials, v8::Object)                                                   \
   V(promise_reject_callback, v8::Function)                                     \
   V(script_data_constructor_function, v8::Function)                            \
+  V(source_map_cache_getter, v8::Function)                                     \
   V(tick_callback_function, v8::Function)                                      \
   V(timers_callback_function, v8::Function)                                    \
   V(tls_wrap_constructor_function, v8::Function)                               \
@@ -610,8 +612,8 @@ class KVStore {
   KVStore(KVStore&&) = delete;
   KVStore& operator=(KVStore&&) = delete;
 
-  virtual v8::Local<v8::String> Get(v8::Isolate* isolate,
-                                    v8::Local<v8::String> key) const = 0;
+  virtual v8::MaybeLocal<v8::String> Get(v8::Isolate* isolate,
+                                         v8::Local<v8::String> key) const = 0;
   virtual void Set(v8::Isolate* isolate,
                    v8::Local<v8::String> key,
                    v8::Local<v8::String> value) = 0;
@@ -1127,6 +1129,9 @@ class Environment : public MemoryRetainer {
   void AtExit(void (*cb)(void* arg), void* arg);
   void RunAtExitCallbacks();
 
+  void RegisterFinalizationGroupForCleanup(v8::Local<v8::FinalizationGroup> fg);
+  bool RunWeakRefCleanup();
+
   // Strings and private symbols are shared across shared contexts
   // The getters simply proxy to the per-isolate primitive.
 #define VP(PropertyName, StringValue) V(v8::Private, PropertyName)
@@ -1250,6 +1255,10 @@ class Environment : public MemoryRetainer {
 
 #endif  // HAVE_INSPECTOR
 
+  // Only available if a MultiIsolatePlatform is in use.
+  void AddArrayBufferAllocatorToKeepAliveUntilIsolateDispose(
+      std::shared_ptr<v8::ArrayBuffer::Allocator>);
+
  private:
   template <typename Fn>
   inline void CreateImmediate(Fn&& cb,
@@ -1328,6 +1337,8 @@ class Environment : public MemoryRetainer {
   Flags flags_;
   uint64_t thread_id_;
   std::unordered_set<worker::Worker*> sub_worker_contexts_;
+
+  std::deque<v8::Global<v8::FinalizationGroup>> cleanup_finalization_groups_;
 
   static void* const kNodeContextTagPtr;
   static int const kNodeContextTag;
@@ -1423,6 +1434,10 @@ class Environment : public MemoryRetainer {
   // A custom async abstraction (a pair of async handle and a state variable)
   // Used by embedders to shutdown running Node instance.
   AsyncRequest thread_stopper_;
+
+  typedef std::unordered_set<std::shared_ptr<v8::ArrayBuffer::Allocator>>
+      ArrayBufferAllocatorList;
+  ArrayBufferAllocatorList* keep_alive_allocators_ = nullptr;
 
   template <typename T>
   void ForEachBaseObject(T&& iterator);

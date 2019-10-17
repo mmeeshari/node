@@ -12,6 +12,7 @@ using errors::TryCatchScope;
 using v8::Array;
 using v8::Context;
 using v8::EscapableHandleScope;
+using v8::FinalizationGroup;
 using v8::Function;
 using v8::HandleScope;
 using v8::Isolate;
@@ -74,6 +75,15 @@ static MaybeLocal<Value> PrepareStackTraceCallback(Local<Context> context,
     try_catch.ReThrow();
   }
   return result;
+}
+
+static void HostCleanupFinalizationGroupCallback(
+    Local<Context> context, Local<FinalizationGroup> group) {
+  Environment* env = Environment::GetCurrent(context);
+  if (env == nullptr) {
+    return;
+  }
+  env->RegisterFinalizationGroupForCleanup(group);
 }
 
 void* NodeArrayBufferAllocator::Allocate(size_t size) {
@@ -203,6 +213,8 @@ void SetIsolateUpForNode(v8::Isolate* isolate, IsolateSettingCategories cat) {
       isolate->SetAllowWasmCodeGenerationCallback(
           AllowWasmCodeGenerationCallback);
       isolate->SetPromiseRejectCallback(task_queue::PromiseRejectCallback);
+      isolate->SetHostCleanupFinalizationGroupCallback(
+          HostCleanupFinalizationGroupCallback);
       v8::CpuProfiler::UseDetailedSourcePositionsForProfiling(isolate);
       break;
     default:
@@ -357,7 +369,40 @@ Local<Context> NewContext(Isolate* isolate,
   if (!InitializeContext(context)) {
     return Local<Context>();
   }
+
+  InitializeContextRuntime(context);
+
   return context;
+}
+
+// This runs at runtime, regardless of whether the context
+// is created from a snapshot.
+void InitializeContextRuntime(Local<Context> context) {
+  Isolate* isolate = context->GetIsolate();
+  HandleScope handle_scope(isolate);
+
+  // Delete `Intl.v8BreakIterator`
+  // https://github.com/nodejs/node/issues/14909
+  Local<String> intl_string = FIXED_ONE_BYTE_STRING(isolate, "Intl");
+  Local<String> break_iter_string =
+    FIXED_ONE_BYTE_STRING(isolate, "v8BreakIterator");
+  Local<Value> intl_v;
+  if (context->Global()->Get(context, intl_string).ToLocal(&intl_v) &&
+      intl_v->IsObject()) {
+    Local<Object> intl = intl_v.As<Object>();
+    intl->Delete(context, break_iter_string).FromJust();
+  }
+
+  // Delete `Atomics.wake`
+  // https://github.com/nodejs/node/issues/21219
+  Local<String> atomics_string = FIXED_ONE_BYTE_STRING(isolate, "Atomics");
+  Local<String> wake_string = FIXED_ONE_BYTE_STRING(isolate, "wake");
+  Local<Value> atomics_v;
+  if (context->Global()->Get(context, atomics_string).ToLocal(&atomics_v) &&
+      atomics_v->IsObject()) {
+    Local<Object> atomics = atomics_v.As<Object>();
+    atomics->Delete(context, wake_string).FromJust();
+  }
 }
 
 bool InitializeContext(Local<Context> context) {
@@ -386,7 +431,6 @@ bool InitializeContext(Local<Context> context) {
     }
 
     static const char* context_files[] = {"internal/per_context/primordials",
-                                          "internal/per_context/setup",
                                           "internal/per_context/domexception",
                                           nullptr};
 

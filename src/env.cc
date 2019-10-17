@@ -29,6 +29,7 @@ using v8::ArrayBuffer;
 using v8::Boolean;
 using v8::Context;
 using v8::EmbedderGraph;
+using v8::FinalizationGroup;
 using v8::Function;
 using v8::FunctionTemplate;
 using v8::HandleScope;
@@ -1034,6 +1035,36 @@ char* Environment::Reallocate(char* data, size_t old_size, size_t size) {
     memset(new_data + old_size, 0, size - old_size);
   Free(data, old_size);
   return new_data;
+}
+
+void Environment::AddArrayBufferAllocatorToKeepAliveUntilIsolateDispose(
+    std::shared_ptr<v8::ArrayBuffer::Allocator> allocator) {
+  if (keep_alive_allocators_ == nullptr) {
+    MultiIsolatePlatform* platform = isolate_data()->platform();
+    CHECK_NOT_NULL(platform);
+
+    keep_alive_allocators_ = new ArrayBufferAllocatorList();
+    platform->AddIsolateFinishedCallback(isolate(), [](void* data) {
+      delete static_cast<ArrayBufferAllocatorList*>(data);
+    }, static_cast<void*>(keep_alive_allocators_));
+  }
+
+  keep_alive_allocators_->insert(allocator);
+}
+
+bool Environment::RunWeakRefCleanup() {
+  isolate()->ClearKeptObjects();
+
+  while (!cleanup_finalization_groups_.empty()) {
+    Local<FinalizationGroup> fg =
+        cleanup_finalization_groups_.front().Get(isolate());
+    cleanup_finalization_groups_.pop_front();
+    if (!FinalizationGroup::Cleanup(fg).FromMaybe(false)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 void AsyncRequest::Install(Environment* env, void* data, uv_async_cb target) {

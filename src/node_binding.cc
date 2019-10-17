@@ -1,4 +1,5 @@
 #include "node_binding.h"
+#include "node_errors.h"
 #include <atomic>
 #include "env-inl.h"
 #include "node_native_module_env.h"
@@ -50,11 +51,11 @@
   V(domain)                                                                    \
   V(errors)                                                                    \
   V(fs)                                                                        \
+  V(fs_dir)                                                                    \
   V(fs_event_wrap)                                                             \
   V(heap_utils)                                                                \
   V(http2)                                                                     \
   V(http_parser)                                                               \
-  V(http_parser_llhttp)                                                        \
   V(inspector)                                                                 \
   V(js_stream)                                                                 \
   V(messaging)                                                                 \
@@ -463,6 +464,13 @@ void DLOpen(const FunctionCallbackInfo<Value>& args) {
     }
 
     if (mp != nullptr) {
+      if (mp->nm_context_register_func == nullptr) {
+        if (env->options()->force_context_aware) {
+          dlib->Close();
+          THROW_ERR_NON_CONTEXT_AWARE_DISABLED(env);
+          return false;
+        }
+      }
       mp->nm_dso_handle = dlib->handle_;
       dlib->SaveInGlobalHandleMap(mp);
     } else {

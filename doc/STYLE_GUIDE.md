@@ -43,7 +43,7 @@
 * Instances should use camelCase.
 * Denote methods with parentheses: `socket.end()` instead of `socket.end`.
 * Function arguments or object properties should use the following format:
-  * ``` * `name` {type|type2} Optional description. **Default:** `value`. ```
+  * ```* `name` {type|type2} Optional description. **Default:** `value`.```
   <!--lint disable maximum-line-length remark-lint-->
   * For example: <code>* `byteOffset` {integer} Index of first byte to expose. **Default:** `0`.</code>
   <!--lint enable maximum-line-length remark-lint-->
@@ -56,6 +56,7 @@
   <!--lint disable prohibited-strings remark-lint-->
   * NOT OK: Javascript, Google's v8
   <!-- lint enable prohibited-strings remark-lint-->
+
 * Use _Node.js_ and not _Node_, _NodeJS_, or similar variants.
   * When referring to the executable, _`node`_ is acceptable.
 

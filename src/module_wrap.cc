@@ -98,83 +98,98 @@ ModuleWrap* ModuleWrap::GetFromID(Environment* env, uint32_t id) {
   return module_wrap_it->second;
 }
 
+// new ModuleWrap(url, context, source, lineOffset, columnOffset)
+// new ModuleWrap(url, context, exportNames, syntheticExecutionFunction)
 void ModuleWrap::New(const FunctionCallbackInfo<Value>& args) {
+  CHECK(args.IsConstructCall());
+  CHECK_GE(args.Length(), 3);
+
   Environment* env = Environment::GetCurrent(args);
   Isolate* isolate = env->isolate();
 
-  CHECK(args.IsConstructCall());
   Local<Object> that = args.This();
 
-  const int argc = args.Length();
-  CHECK_GE(argc, 2);
-
   CHECK(args[0]->IsString());
-  Local<String> source_text = args[0].As<String>();
-
-  CHECK(args[1]->IsString());
-  Local<String> url = args[1].As<String>();
+  Local<String> url = args[0].As<String>();
 
   Local<Context> context;
+  if (args[1]->IsUndefined()) {
+    context = that->CreationContext();
+  } else {
+    CHECK(args[1]->IsObject());
+    ContextifyContext* sandbox =
+        ContextifyContext::ContextFromContextifiedSandbox(
+            env, args[1].As<Object>());
+    CHECK_NOT_NULL(sandbox);
+    context = sandbox->context();
+  }
+
   Local<Integer> line_offset;
   Local<Integer> column_offset;
 
-  if (argc == 5) {
-    // new ModuleWrap(source, url, context?, lineOffset, columnOffset)
-    if (args[2]->IsUndefined()) {
-      context = that->CreationContext();
-    } else {
-      CHECK(args[2]->IsObject());
-      ContextifyContext* sandbox =
-          ContextifyContext::ContextFromContextifiedSandbox(
-              env, args[2].As<Object>());
-      CHECK_NOT_NULL(sandbox);
-      context = sandbox->context();
-    }
-
+  bool synthetic = args[2]->IsArray();
+  if (synthetic) {
+    // new ModuleWrap(url, context, exportNames, syntheticExecutionFunction)
+    CHECK(args[3]->IsFunction());
+  } else {
+    // new ModuleWrap(url, context, source, lineOffset, columOffset)
+    CHECK(args[2]->IsString());
     CHECK(args[3]->IsNumber());
     line_offset = args[3].As<Integer>();
-
     CHECK(args[4]->IsNumber());
     column_offset = args[4].As<Integer>();
-  } else {
-    // new ModuleWrap(source, url)
-    context = that->CreationContext();
-    line_offset = Integer::New(isolate, 0);
-    column_offset = Integer::New(isolate, 0);
   }
-
-  ShouldNotAbortOnUncaughtScope no_abort_scope(env);
-  TryCatchScope try_catch(env);
-  Local<Module> module;
 
   Local<PrimitiveArray> host_defined_options =
       PrimitiveArray::New(isolate, HostDefinedOptions::kLength);
   host_defined_options->Set(isolate, HostDefinedOptions::kType,
                             Number::New(isolate, ScriptType::kModule));
 
-  // compile
+  ShouldNotAbortOnUncaughtScope no_abort_scope(env);
+  TryCatchScope try_catch(env);
+
+  Local<Module> module;
+
   {
-    ScriptOrigin origin(url,
-                        line_offset,                          // line offset
-                        column_offset,                        // column offset
-                        True(isolate),                        // is cross origin
-                        Local<Integer>(),                     // script id
-                        Local<Value>(),                       // source map URL
-                        False(isolate),                       // is opaque (?)
-                        False(isolate),                       // is WASM
-                        True(isolate),                        // is ES Module
-                        host_defined_options);
     Context::Scope context_scope(context);
-    ScriptCompiler::Source source(source_text, origin);
-    if (!ScriptCompiler::CompileModule(isolate, &source).ToLocal(&module)) {
-      if (try_catch.HasCaught() && !try_catch.HasTerminated()) {
-        CHECK(!try_catch.Message().IsEmpty());
-        CHECK(!try_catch.Exception().IsEmpty());
-        AppendExceptionLine(env, try_catch.Exception(), try_catch.Message(),
-                            ErrorHandlingMode::MODULE_ERROR);
-        try_catch.ReThrow();
+    if (synthetic) {
+      CHECK(args[2]->IsArray());
+      Local<Array> export_names_arr = args[2].As<Array>();
+
+      uint32_t len = export_names_arr->Length();
+      std::vector<Local<String>> export_names(len);
+      for (uint32_t i = 0; i < len; i++) {
+        Local<Value> export_name_val =
+            export_names_arr->Get(context, i).ToLocalChecked();
+        CHECK(export_name_val->IsString());
+        export_names[i] = export_name_val.As<String>();
       }
-      return;
+
+      module = Module::CreateSyntheticModule(isolate, url, export_names,
+        SyntheticModuleEvaluationStepsCallback);
+    } else {
+      Local<String> source_text = args[2].As<String>();
+      ScriptOrigin origin(url,
+                          line_offset,                      // line offset
+                          column_offset,                    // column offset
+                          True(isolate),                    // is cross origin
+                          Local<Integer>(),                 // script id
+                          Local<Value>(),                   // source map URL
+                          False(isolate),                   // is opaque (?)
+                          False(isolate),                   // is WASM
+                          True(isolate),                    // is ES Module
+                          host_defined_options);
+      ScriptCompiler::Source source(source_text, origin);
+      if (!ScriptCompiler::CompileModule(isolate, &source).ToLocal(&module)) {
+        if (try_catch.HasCaught() && !try_catch.HasTerminated()) {
+          CHECK(!try_catch.Message().IsEmpty());
+          CHECK(!try_catch.Exception().IsEmpty());
+          AppendExceptionLine(env, try_catch.Exception(), try_catch.Message(),
+                              ErrorHandlingMode::MODULE_ERROR);
+          try_catch.ReThrow();
+        }
+        return;
+      }
     }
   }
 
@@ -183,6 +198,13 @@ void ModuleWrap::New(const FunctionCallbackInfo<Value>& args) {
   }
 
   ModuleWrap* obj = new ModuleWrap(env, that, module, url);
+
+  if (synthetic) {
+    obj->synthetic_ = true;
+    obj->synthetic_evaluation_steps_.Reset(
+        env->isolate(), args[3].As<Function>());
+  }
+
   obj->context_.Reset(isolate, context);
 
   env->hash_to_module_map.emplace(module->GetIdentityHash(), obj);
@@ -307,6 +329,10 @@ void ModuleWrap::Evaluate(const FunctionCallbackInfo<Value>& args) {
     result = module->Evaluate(context);
   }
 
+  if (result.IsEmpty()) {
+    CHECK(try_catch.HasCaught());
+  }
+
   // Convert the termination exception into a regular exception.
   if (timed_out || received_signal) {
     if (!env->is_main_thread() && env->is_stopping())
@@ -331,7 +357,7 @@ void ModuleWrap::Evaluate(const FunctionCallbackInfo<Value>& args) {
   args.GetReturnValue().Set(result.ToLocalChecked());
 }
 
-void ModuleWrap::Namespace(const FunctionCallbackInfo<Value>& args) {
+void ModuleWrap::GetNamespace(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
   Isolate* isolate = args.GetIsolate();
   ModuleWrap* obj;
@@ -488,7 +514,12 @@ enum DescriptorType {
 // Nothing for the "null" cache entries.
 inline Maybe<uv_file> OpenDescriptor(const std::string& path) {
   uv_fs_t fs_req;
+#ifdef _WIN32
+  std::string pth = "\\\\.\\" + path;
+  uv_file fd = uv_fs_open(nullptr, &fs_req, pth.c_str(), O_RDONLY, 0, nullptr);
+#else
   uv_file fd = uv_fs_open(nullptr, &fs_req, path.c_str(), O_RDONLY, 0, nullptr);
+#endif
   uv_fs_req_cleanup(&fs_req);
   if (fd < 0) return Nothing<uv_file>();
   return Just(fd);
@@ -609,8 +640,7 @@ Maybe<const PackageConfig*> GetPackageConfig(Environment* env,
   }
 
   Local<Value> exports_v;
-  if (env->options()->experimental_exports &&
-      pkg_json->Get(env->context(),
+  if (pkg_json->Get(env->context(),
       env->exports_string()).ToLocal(&exports_v) &&
       !exports_v->IsNullOrUndefined()) {
     Global<Value> exports;
@@ -773,39 +803,6 @@ Maybe<URL> FinalizeResolution(Environment* env,
   return Just(resolved);
 }
 
-Maybe<URL> PackageMainResolve(Environment* env,
-                              const URL& pjson_url,
-                              const PackageConfig& pcfg,
-                              const URL& base) {
-  if (pcfg.exists == Exists::Yes) {
-    if (pcfg.has_main == HasMain::Yes) {
-      URL resolved(pcfg.main, pjson_url);
-      const std::string& path = resolved.ToFilePath();
-      if (CheckDescriptorAtPath(path) == FILE) {
-        return Just(resolved);
-      }
-    }
-    if (env->options()->es_module_specifier_resolution == "node") {
-      if (pcfg.has_main == HasMain::Yes) {
-        return FinalizeResolution(env, URL(pcfg.main, pjson_url), base);
-      } else {
-        return FinalizeResolution(env, URL("index", pjson_url), base);
-      }
-    }
-    if (pcfg.type != PackageType::Module) {
-      Maybe<URL> resolved = LegacyMainResolve(pjson_url, pcfg);
-      if (!resolved.IsNothing()) {
-        return resolved;
-      }
-    }
-  }
-  std::string msg = "Cannot find main entry point for " +
-      URL(".", pjson_url).ToFilePath() + " imported from " +
-      base.ToFilePath();
-  node::THROW_ERR_MODULE_NOT_FOUND(env, msg.c_str());
-  return Nothing<URL>();
-}
-
 void ThrowExportsNotFound(Environment* env,
                           const std::string& subpath,
                           const URL& pjson_url,
@@ -887,12 +884,104 @@ Maybe<URL> ResolveExportsTarget(Environment* env,
   return Just(subpath_resolved);
 }
 
+Maybe<URL> PackageMainResolve(Environment* env,
+                              const URL& pjson_url,
+                              const PackageConfig& pcfg,
+                              const URL& base) {
+  if (pcfg.exists == Exists::Yes) {
+    Isolate* isolate = env->isolate();
+    Local<Context> context = env->context();
+    if (!pcfg.exports.IsEmpty()) {
+      Local<Value> exports = pcfg.exports.Get(isolate);
+      if (exports->IsString() || exports->IsObject() || exports->IsArray()) {
+        Local<Value> target;
+        if (!exports->IsObject()) {
+          target = exports;
+        } else {
+          Local<Object> exports_obj = exports.As<Object>();
+          Local<String> dot_string = String::NewFromUtf8(env->isolate(), ".",
+              v8::NewStringType::kNormal).ToLocalChecked();
+          target =
+              exports_obj->Get(env->context(), dot_string).ToLocalChecked();
+        }
+        if (target->IsString()) {
+          Utf8Value target_utf8(isolate, target.As<v8::String>());
+          std::string target(*target_utf8, target_utf8.length());
+          Maybe<URL> resolved = ResolveExportsTarget(env, target, "", ".",
+              pjson_url, base);
+          if (resolved.IsNothing()) {
+            ThrowExportsInvalid(env, ".", target, pjson_url, base);
+            return Nothing<URL>();
+          }
+          return FinalizeResolution(env, resolved.FromJust(), base);
+        } else if (target->IsArray()) {
+          Local<Array> target_arr = target.As<Array>();
+          const uint32_t length = target_arr->Length();
+          if (length == 0) {
+            ThrowExportsInvalid(env, ".", target, pjson_url, base);
+            return Nothing<URL>();
+          }
+          for (uint32_t i = 0; i < length; i++) {
+            auto target_item = target_arr->Get(context, i).ToLocalChecked();
+            if (target_item->IsString()) {
+              Utf8Value target_utf8(isolate, target_item.As<v8::String>());
+              std::string target_str(*target_utf8, target_utf8.length());
+              Maybe<URL> resolved = ResolveExportsTarget(env, target_str, "",
+                  ".", pjson_url, base, false);
+              if (resolved.IsNothing()) continue;
+              return FinalizeResolution(env, resolved.FromJust(), base);
+            }
+          }
+          auto invalid = target_arr->Get(context, length - 1).ToLocalChecked();
+          if (!invalid->IsString()) {
+            ThrowExportsInvalid(env, ".", invalid, pjson_url, base);
+            return Nothing<URL>();
+          }
+          Utf8Value invalid_utf8(isolate, invalid.As<v8::String>());
+          std::string invalid_str(*invalid_utf8, invalid_utf8.length());
+          Maybe<URL> resolved = ResolveExportsTarget(env, invalid_str, "",
+                                                    ".", pjson_url, base);
+          CHECK(resolved.IsNothing());
+          return Nothing<URL>();
+        } else {
+          ThrowExportsInvalid(env, ".", target, pjson_url, base);
+          return Nothing<URL>();
+        }
+      }
+    }
+    if (pcfg.has_main == HasMain::Yes) {
+      URL resolved(pcfg.main, pjson_url);
+      const std::string& path = resolved.ToFilePath();
+      if (CheckDescriptorAtPath(path) == FILE) {
+        return Just(resolved);
+      }
+    }
+    if (env->options()->es_module_specifier_resolution == "node") {
+      if (pcfg.has_main == HasMain::Yes) {
+        return FinalizeResolution(env, URL(pcfg.main, pjson_url), base);
+      } else {
+        return FinalizeResolution(env, URL("index", pjson_url), base);
+      }
+    }
+    if (pcfg.type != PackageType::Module) {
+      Maybe<URL> resolved = LegacyMainResolve(pjson_url, pcfg);
+      if (!resolved.IsNothing()) {
+        return resolved;
+      }
+    }
+  }
+  std::string msg = "Cannot find main entry point for " +
+      URL(".", pjson_url).ToFilePath() + " imported from " +
+      base.ToFilePath();
+  node::THROW_ERR_MODULE_NOT_FOUND(env, msg.c_str());
+  return Nothing<URL>();
+}
+
 Maybe<URL> PackageExportsResolve(Environment* env,
                                  const URL& pjson_url,
                                  const std::string& pkg_subpath,
                                  const PackageConfig& pcfg,
                                  const URL& base) {
-  CHECK(env->options()->experimental_exports);
   Isolate* isolate = env->isolate();
   Local<Context> context = env->context();
   Local<Value> exports = pcfg.exports.Get(isolate);
@@ -1230,7 +1319,7 @@ static MaybeLocal<Promise> ImportModuleDynamically(
   Local<Value> result;
   if (import_callback->Call(
         context,
-        v8::Undefined(iso),
+        Undefined(iso),
         arraysize(import_args),
         import_args).ToLocal(&result)) {
     CHECK(result->IsPromise());
@@ -1268,8 +1357,12 @@ void ModuleWrap::HostInitializeImportMetaObjectCallback(
   Local<Function> callback =
       env->host_initialize_import_meta_object_callback();
   Local<Value> args[] = { wrap, meta };
-  callback->Call(context, Undefined(env->isolate()), arraysize(args), args)
-      .ToLocalChecked();
+  TryCatchScope try_catch(env);
+  USE(callback->Call(
+        context, Undefined(env->isolate()), arraysize(args), args));
+  if (try_catch.HasCaught() && !try_catch.HasTerminated()) {
+    try_catch.ReThrow();
+  }
 }
 
 void ModuleWrap::SetInitializeImportMetaObjectCallback(
@@ -1286,6 +1379,52 @@ void ModuleWrap::SetInitializeImportMetaObjectCallback(
       HostInitializeImportMetaObjectCallback);
 }
 
+MaybeLocal<Value> ModuleWrap::SyntheticModuleEvaluationStepsCallback(
+    Local<Context> context, Local<Module> module) {
+  Environment* env = Environment::GetCurrent(context);
+  Isolate* isolate = env->isolate();
+
+  ModuleWrap* obj = GetFromModule(env, module);
+
+  TryCatchScope try_catch(env);
+  Local<Function> synthetic_evaluation_steps =
+      obj->synthetic_evaluation_steps_.Get(isolate);
+  MaybeLocal<Value> ret = synthetic_evaluation_steps->Call(context,
+      obj->object(), 0, nullptr);
+  if (ret.IsEmpty()) {
+    CHECK(try_catch.HasCaught());
+  }
+  obj->synthetic_evaluation_steps_.Reset();
+  if (try_catch.HasCaught() && !try_catch.HasTerminated()) {
+    CHECK(!try_catch.Message().IsEmpty());
+    CHECK(!try_catch.Exception().IsEmpty());
+    try_catch.ReThrow();
+    return MaybeLocal<Value>();
+  }
+  return ret;
+}
+
+void ModuleWrap::SetSyntheticExport(
+      const v8::FunctionCallbackInfo<v8::Value>& args) {
+  Isolate* isolate = args.GetIsolate();
+  Local<Object> that = args.This();
+
+  ModuleWrap* obj;
+  ASSIGN_OR_RETURN_UNWRAP(&obj, that);
+
+  CHECK(obj->synthetic_);
+
+  CHECK_EQ(args.Length(), 2);
+
+  CHECK(args[0]->IsString());
+  Local<String> export_name = args[0].As<String>();
+
+  Local<Value> export_value = args[1];
+
+  Local<Module> module = obj->module_.Get(isolate);
+  module->SetSyntheticModuleExport(export_name, export_value);
+}
+
 void ModuleWrap::Initialize(Local<Object> target,
                             Local<Value> unused,
                             Local<Context> context,
@@ -1300,7 +1439,8 @@ void ModuleWrap::Initialize(Local<Object> target,
   env->SetProtoMethod(tpl, "link", Link);
   env->SetProtoMethod(tpl, "instantiate", Instantiate);
   env->SetProtoMethod(tpl, "evaluate", Evaluate);
-  env->SetProtoMethodNoSideEffect(tpl, "namespace", Namespace);
+  env->SetProtoMethod(tpl, "setExport", SetSyntheticExport);
+  env->SetProtoMethodNoSideEffect(tpl, "getNamespace", GetNamespace);
   env->SetProtoMethodNoSideEffect(tpl, "getStatus", GetStatus);
   env->SetProtoMethodNoSideEffect(tpl, "getError", GetError);
   env->SetProtoMethodNoSideEffect(tpl, "getStaticDependencySpecifiers",
